@@ -178,7 +178,7 @@ document.addEventListener('DOMContentLoaded', () => {
         chatHistory.innerHTML = '';
         
         if (history.length === 0) {
-            addMessage("Hello! I'm BBBot. How can I assist you today?", false);
+            addMessage("Hello! I'm ChatBot. How can I assist you today?", false);
         } else {
             history.forEach(msg => addMessage(msg.text, msg.role === 'user'));
         }

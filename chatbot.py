@@ -1,8 +1,7 @@
 import os
 import tiktoken
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from groq import Groq
 
 # Load environment variables (API Key)
 load_dotenv()
@@ -18,12 +17,12 @@ class ContextAwareChatBot:
         """
         self.max_history_tokens = max_history_tokens
         
-        # Initialize Gemini GenAI client
-        api_key = os.environ.get("GEMINI_API_KEY")
+        # Initialize Groq client
+        api_key = os.environ.get("GROQ_API_KEY")
         if not api_key:
-            print("Warning: GEMINI_API_KEY is not set in the environment or .env file.")
+            print("Warning: GROQ_API_KEY is not set in the environment or .env file.")
         
-        self.client = genai.Client(api_key=api_key)
+        self.client = Groq(api_key=api_key)
         
         # --- Prompt Engineering Task ---
         # Context-aware system prompt template with strict instructions on 
@@ -38,7 +37,10 @@ class ContextAwareChatBot:
         )
         
         # Maintain chat history
-        self.history = existing_history if existing_history is not None else []
+        if existing_history:
+            self.history = existing_history
+        else:
+            self.history = [{'role': 'system', 'content': self.system_instruction}]
         
     def count_tokens(self, text: str) -> int:
         """Counts tokens in a text using tiktoken."""
@@ -48,8 +50,7 @@ class ContextAwareChatBot:
         """Calculates total tokens currently used in conversation history."""
         total = 0
         for msg in self.history:
-            for part in msg.get('parts', []):
-                total += self.count_tokens(part.get('text', ''))
+            total += self.count_tokens(msg.get('content', ''))
         return total
         
     def summarize_history(self):
@@ -58,17 +59,18 @@ class ContextAwareChatBot:
         Summarizes older messages to free up context window tokens.
         Leaves the most recent turns intact for immediate conversation flow.
         """
-        if len(self.history) <= 4:
+        if len(self.history) <= 5:
             # We need enough history to make summarizing worth it without losing immediate context
             return
             
         # Keep the last 4 conversational turns (2 from user, 2 from model ideally)
         keep_recent = 4
-        messages_to_summarize = self.history[:-keep_recent]
+        # Skip the system prompt at index 0
+        messages_to_summarize = self.history[1:-keep_recent]
         recent_messages = self.history[-keep_recent:]
         
         # Create a single textual block of older messages
-        old_text = "\n".join([f"{msg['role']}: {msg['parts'][0]['text']}" for msg in messages_to_summarize])
+        old_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in messages_to_summarize])
         
         prompt = (
             "Please concisely summarize the following older conversation history. "
@@ -78,17 +80,19 @@ class ContextAwareChatBot:
         )
         
         try:
-            response = self.client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt,
+            response = self.client.chat.completions.create(
+                model='llama3-8b-8192',
+                messages=[{'role': 'user', 'content': prompt}],
+                temperature=0.3
             )
             
             # Formulate the summary as a system/context note (injected via user role so API accepts it)
-            summary_text = f"[System Context Optimization: Earlier conversation summarized as: {response.text}]"
+            summary_text = f"[System Context Optimization: Earlier conversation summarized as: {response.choices[0].message.content}]"
             
-            # Reconstruct history: The new summary context + recent message flow
-            self.history = [{'role': 'user', 'parts': [{'text': summary_text}]}, 
-                            {'role': 'model', 'parts': [{'text': 'Understood, retaining this context.'}]}] + recent_messages
+            # Reconstruct history: The system prompt + new summary context + recent message flow
+            self.history = [self.history[0],
+                            {'role': 'user', 'content': summary_text}, 
+                            {'role': 'assistant', 'content': 'Understood, retaining this context.'}] + recent_messages
             
             print(f"\n[System: Context footprint exceeded {self.max_history_tokens} tokens. Older messages summarized to optimize token window.]\n")
             
@@ -99,27 +103,24 @@ class ContextAwareChatBot:
         """Handle incoming chat message, contextualize, and return response."""
         
         # 1. Context Window Handling & Token Optimization
-        if len(self.history) > 0 and self.get_history_token_count() > self.max_history_tokens:
+        if len(self.history) > 1 and self.get_history_token_count() > self.max_history_tokens:
             self.summarize_history()
             
         # 2. Append new user message to history
-        self.history.append({'role': 'user', 'parts': [{'text': user_input}]})
+        self.history.append({'role': 'user', 'content': user_input})
         
         try:
             # 3. Request completion using standard LLM API
-            response = self.client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=self.history,
-                config=types.GenerateContentConfig(
-                    system_instruction=self.system_instruction,
-                    temperature=0.7 # Slight temperature to balance conciseness and conversational ability
-                )
+            response = self.client.chat.completions.create(
+                model='llama-3.3-70b-versatile',
+                messages=self.history,
+                temperature=0.7 # Slight temperature to balance conciseness and conversational ability
             )
             
-            response_text = response.text
+            response_text = response.choices[0].message.content
             
             # 4. Append the response to maintain conversation history
-            self.history.append({'role': 'model', 'parts': [{'text': response_text}]})
+            self.history.append({'role': 'assistant', 'content': response_text})
             
             return response_text
             

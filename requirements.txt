@@ -1,6 +1,5 @@
-google-genai
+groq
 tiktoken
 python-dotenv
 fastapi
 uvicorn
-pymongo
